@@ -85,6 +85,14 @@ class input:
             self.CancerHotSpotsBED = args.cancer_hot_spots
         except AttributeError:
             self.aSCNA_variance_threshold = 'NA'
+            
+        if args.forcecall_TiN_value is not None:
+            try:
+                self.forcecall_TiN_value = float(args.forcecall_TiN_value)
+            except AttributeError:
+                self.forcecall_TiN_value = args.forcecall_TiN_value
+        else:
+            self.forcecall_TiN_value = args.forcecall_TiN_value
 
         # related to inputs from class functions
         self.call_stats_table = []
@@ -365,6 +373,13 @@ class output:
             self.CI_tin_low = 0
 
     def reclassify_mutations(self):
+        if self.input.forcecall_TiN_value is not None:
+            TiN_close = abs(self.TiN_range-self.input.forcecall_TiN_value)
+            TiN_int = np.where(TiN_close==min(TiN_close))[0][0]
+            TiN = self.TiN_range[TiN_int]
+            self.TiN = TiN
+            self.TiN_int = TiN_int
+        
         # calculate p(Somatic | given joint TiN estimate)
         if self.input.weighted_classification == True:
             numerator = np.zeros(len(self.ssnv_based_model.p_TiN_given_S))
@@ -384,6 +399,7 @@ class output:
             denominator = numerator + np.array(
                 [1 - self.ssnv_based_model.p_somatic] * np.expand_dims(
                     np.nan_to_num(self.ssnv_based_model.p_TiN_given_G[:, self.TiN_int]), 1))
+            denominator = denominator[0]
         self.SSNVs.loc[:, ('p_somatic_given_TiN')] = np.nan_to_num(np.true_divide(numerator, denominator))
         # expected normal allele fraction given TiN and tau
         af_n_given_TiN = np.multiply(self.ssnv_based_model.tumor_f, self.ssnv_based_model.CN_ratio[:, self.TiN_int])
@@ -406,6 +422,7 @@ class output:
                 denominator = numerator + np.array(
                     [1 - indel_model.p_somatic] * np.expand_dims(np.nan_to_num(
                         indel_model.p_TiN_given_G[:, self.TiN_int]), 1))
+                denominator = denominator[0]
                 af_n_given_TiN = np.multiply(indel_model.tumor_f, indel_model.CN_ratio[:, self.TiN_int])
                 self.indels.loc[:, ('p_somatic_given_TiN')] = np.nan_to_num(np.true_divide(numerator, denominator))
                 self.indels.loc[:, 'p_outlier'] = indel_model.rv_normal_af.cdf(af_n_given_TiN)
@@ -496,6 +513,8 @@ def main():
                         , required=False, default='NA')
     parser.add_argument('--only_ascnas',
                         help='only use ascna data for TiN estimation',required=False, action='store_true')
+    parser.add_argument('--forcecall_TiN_value',
+                        help='reclassify mutations using an input TiN value',required=False, default=None)
     args = parser.parse_args()
     if args.cn_data_path == 'NULL' and args.mutation_data_path == 'NULL':
         print('One of CN data or SSNV data are required.')
@@ -568,6 +587,7 @@ def main():
         # combine models and reclassify mutations
     do = output(di, ssnv_based_model, ascna_based_model)
     do.calculate_joint_estimate()
+    
     if len(do.SSNVs)>1:
         do.reclassify_mutations()
         do.SSNVs.drop('Chromosome', axis=1, inplace=True)
@@ -586,23 +606,27 @@ def main():
         do.indels.to_csv(path_or_buf=do.input.output_path + '/' + do.input.output_name + '.deTiN_indels.txt', sep='\t',
                          index=None)
     # write plots
-    if not np.isnan(ascna_based_model.TiN):
-        do.ascna_based_model.segs['Chromosome'] = do.ascna_based_model.segs['Chromosome'] + 1
-        do.ascna_based_model.segs.to_csv(path_or_buf=do.input.output_path + '/' + do.input.output_name + '.deTiN_aSCNAs.txt', sep='\t',
-                    index=None)
-        du.plot_kmeans_info(ascna_based_model, do.input.output_path, do.input.output_name)
-        du.plot_TiN_models(do)
-        du.plot_aSCNA_het_data(do)
+    if di.forcecall_TiN_value is not None:
+        if not np.isnan(ascna_based_model.TiN):
+            do.ascna_based_model.segs['Chromosome'] = do.ascna_based_model.segs['Chromosome'] + 1
+            do.ascna_based_model.segs.to_csv(path_or_buf=do.input.output_path + '/' + do.input.output_name + '.deTiN_aSCNAs.txt', sep='\t',
+                        index=None)
+            du.plot_kmeans_info(ascna_based_model, do.input.output_path, do.input.output_name)
+            du.plot_TiN_models(do)
+            du.plot_aSCNA_het_data(do)
     if not np.isnan(ssnv_based_model.TiN):
         du.plot_SSNVs(do)
+        
     # write TiN and CIs
-    file = open(do.input.output_path + '/' + do.input.output_name + '.TiN_estimate.txt', 'w')
-    file.write('%s' % (do.TiN))
-    file.close()
+    
+    if di.forcecall_TiN_value is not None:
+        file = open(do.input.output_path + '/' + do.input.output_name + '.TiN_estimate.txt', 'w')
+        file.write('%s' % (do.TiN))
+        file.close()
 
-    file = open(do.input.output_path + '/' + do.input.output_name + '.TiN_estimate_CI.txt', 'w')
-    file.write('%s - %s' % (str(do.CI_tin_low), str(do.CI_tin_high)))
-    file.close()
+        file = open(do.input.output_path + '/' + do.input.output_name + '.TiN_estimate_CI.txt', 'w')
+        file.write('%s - %s' % (str(do.CI_tin_low), str(do.CI_tin_high)))
+        file.close()
 
     file = open(do.input.output_path + '/' + do.input.output_name + '.number_of_SSNVs_added.txt','w')
     file.write('%s\n'% int(n_calls_added))
